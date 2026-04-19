@@ -170,7 +170,8 @@ EOF
   cat > "$worktree_path/self-merge.sh" << 'MERGE_SCRIPT'
 #!/bin/bash
 # Worker 完成后自合并脚本
-# 用法: ./self-merge.sh [success|fail]## 改进：worktree 保留完整 prd.json，合并时直接读取任务状态
+# 用法: ./self-merge.sh [success|fail]
+# 改进：merge 前备份主 prd.json，merge 后恢复并更新状态
 
 set -e
 cd "$(dirname "$0")"
@@ -189,19 +190,35 @@ if [ "$RESULT" = "success" ]; then
     git commit -m "feat: $TASK_ID completed" || true
   fi
 
-  # 2. 合并代码
+  # 2. 备份主仓库的 prd.json（关键：防止被 git merge 覆盖）
   cd "$PROJECT_DIR"
+  MAIN_PRD="$PROJECT_DIR/prd.json"
+  BACKUP_PRD="/tmp/prd-$TASK_ID-backup.json"
+
+  if [ -f "$MAIN_PRD" ]; then
+    cp "$MAIN_PRD" "$BACKUP_PRD"
+    echo "[$(date)] Backed up main prd.json"
+  fi
+
+  # 3. 合并代码（允许失败，冲突需要手动解决）
   git merge "$BRANCH_NAME" --no-edit -m "feat: $TASK_ID completed" 2>/dev/null || {
     echo "[$(date)] MERGE_FAILED: conflicts detected"
     echo "  Resolve conflicts manually in $PROJECT_DIR"
+    # 恢复备份
+    [ -f "$BACKUP_PRD" ] && mv "$BACKUP_PRD" "$MAIN_PRD"
     exit 1
   }
-  # 3. 从worktree 的 prd.json 读取任务状态并更新主 prd.json
+
+  # 4. 恢复主 prd.json 并更新任务状态
+  if [ -f "$BACKUP_PRD" ]; then
+    mv "$BACKUP_PRD" "$MAIN_PRD"
+    echo "[$(date)] Restored main prd.json"
+  fi
+
+  # 5. 从 worktree 的 prd.json 读取任务状态并更新主 prd.json
   WORKTREE_PRD="$WORKTREE_PATH/prd.json"
-  MAIN_PRD="$PROJECT_DIR/prd.json"
 
   if [ -f "$WORKTREE_PRD" ]; then
-    # 读取 worktree 中该任务的状态
     TASK_PASSES=$(jq -r '.userStories[] | select(.id == "'$TASK_ID'") | .passes // false' "$WORKTREE_PRD" 2>/dev/null)
 
     if [ "$TASK_PASSES" = "true" ]; then
@@ -213,7 +230,13 @@ if [ "$RESULT" = "success" ]; then
     fi
   fi
 
-  # 4. 清理 worktree 和分支
+  # 6. 提交 prd.json 更新
+  if [ -n "$(git status --porcelain "$MAIN_PRD")" ]; then
+    git add "$MAIN_PRD"
+    git commit -m "chore: update prd.json for $TASK_ID" || true
+  fi
+
+  # 7. 清理 worktree 和分支
   git worktree remove "$WORKTREE_PATH" --force 2>/dev/null || {
     rm -rf "$WORKTREE_PATH"
   }

@@ -7,13 +7,76 @@ You are an autonomous coding agent working on a software project.
 1. Read the PRD at `prd.json` (in the same directory as this file)
 2. Read the progress log at `progress.txt` (check Codebase Patterns section first)
 3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
-4. Pick the **highest priority** user story where `passes: false`
-5. Implement that single user story
-6. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
-7. Update CLAUDE.md files if you discover reusable patterns (see below)
-8. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
-9. Update the PRD to set `passes: true` for the completed story
-10. Append your progress to `progress.txt`
+4. **Check for unresolved decision points** (see Decision Points section below)
+5. If decision points exist, resolve them before proceeding
+6. Pick the **highest priority** user story where `passes: false`
+7. Implement that single user story
+8. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
+9. Update CLAUDE.md files if you discover reusable patterns (see below)
+10. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
+11. Update the PRD to set `passes: true` for the completed story
+12. Append your progress to `progress.txt`
+13. **If running in daemon mode (`.worker-context` exists), run self-merge:**
+    ```bash
+    # Check if this is a daemon worker
+    if [ -f ".worker-context" ]; then
+      ./self-merge.sh success
+    fi
+    ```
+
+## Decision Points
+
+**Check for unresolved decision points BEFORE starting any task:**
+
+```bash
+jq '.decisionPoints[] | select(.resolved != true)' prd.json
+```
+
+If there are unresolved decision points:
+
+1. **STOP execution** - do not proceed with tasks
+2. Display the decision to the user using `AskUserQuestion` tool:
+   - Show the `question` field
+   - Present `options` array as choices
+   - Include `impact` field as context
+3. Wait for user selection
+4. Update `prd.json` to mark resolved:
+   ```bash
+   jq --arg id "D1" --arg choice "user's choice" '
+     .decisionPoints = [.decisionPoints[] | if .id == $id then .resolved = true | .chosen = $choice else . end]
+   ' prd.json > prd.json.tmp && mv prd.json.tmp prd.json
+   ```
+5. Continue to next step
+
+## Decision Point Format in prd.json
+
+```json
+{
+  "decisionPoints": [
+    {
+      "id": "D1",
+      "question": "决策问题？",
+      "options": ["选项1", "选项2", "选项3"],
+      "impact": "影响说明",
+      "after": ["T001"],
+      "before": ["T011"],
+      "resolved": false,
+      "chosen": null
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `id` | Decision identifier |
+| `question` | Question to ask user |
+| `options` | Available choices |
+| `impact` | What this affects |
+| `after` | Tasks that must complete first |
+| `before` | Tasks blocked by this decision |
+| `resolved` | Has user made choice? |
+| `chosen` | User's selection |
 
 ## Progress Report Format
 

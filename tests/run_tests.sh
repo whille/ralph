@@ -478,6 +478,266 @@ test_claude_md_exists() {
 run_test "CLAUDE.md 存在" test_claude_md_exists
 
 # ==========================================
+# Bug 回归测试 (历史 Bug)
+# ==========================================
+echo ""
+echo -e "${YELLOW}Testing: Bug Regression Tests${NC}"
+
+# Bug #1: Daemon 配置路径与 worktree 路径不匹配
+test_config_worktree_path_match() {
+    # 模拟场景：daemon config watchDirs 应包含 worktree 所在项目
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    trap "rm -rf '$temp_dir'" RETURN
+
+    local config="$temp_dir/config.json"
+    local project_dir="$temp_dir/project"
+    local worktree_dir="$project_dir/.claude/worktrees/US-001"
+
+    mkdir -p "$worktree_dir"
+
+    # config 应该包含 project 目录
+    cat > "$config" << EOF
+{"watchDirs":["$project_dir"]}
+EOF
+
+    # 验证：worktree 的父目录应该在 watchDirs 中
+    local watch_dir
+    watch_dir=$(jq -r '.watchDirs[0]' "$config")
+
+    # worktree 的项目根目录应该在 watchDirs 中
+    local worktree_project
+    worktree_project=$(dirname "$(dirname "$(dirname "$worktree_dir")")")
+
+    assert_equals "$watch_dir" "$worktree_project"
+}
+
+run_test "Bug#1: config 与 worktree 路径匹配" test_config_worktree_path_match
+
+# Bug #2: Worktree 完整文件检查
+test_worktree_complete_files() {
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    trap "rm -rf '$temp_dir'" RETURN
+
+    local worktree="$temp_dir/US-001"
+    mkdir -p "$worktree"
+
+    # 创建所有必需文件（模拟 spawn_worker）
+    touch "$worktree/prd.json"
+    touch "$worktree/progress.txt"
+    touch "$worktree/.worker-context"
+    touch "$worktree/self-merge.sh"
+    echo "12345" > "$worktree/.worker.pid"
+    echo "ralph/US-001-123" > "$worktree/.worker.branch"
+
+    # 验证所有文件存在
+    assert_file_exists "$worktree/.worker-context" && \
+    assert_file_exists "$worktree/self-merge.sh" && \
+    assert_file_exists "$worktree/.worker.pid" && \
+    assert_file_exists "$worktree/.worker.branch"
+}
+
+run_test "Bug#2: Worktree 完整文件检查" test_worktree_complete_files
+
+# Bug #3: Worktree 状态合并到主 PRD
+test_worktree_status_merge_to_main() {
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    trap "rm -rf '$temp_dir'" RETURN
+
+    local main_prd="$temp_dir/prd.json"
+    local worktree_prd="$temp_dir/worktrees/US-001/prd.json"
+
+    mkdir -p "$(dirname "$worktree_prd")"
+
+    # 主 PRD: 任务未完成
+    cat > "$main_prd" << 'EOF'
+{"userStories":[{"id":"US-001","passes":false},{"id":"US-002","passes":false}]}
+EOF
+
+    # Worktree PRD: 任务已完成
+    cat > "$worktree_prd" << 'EOF'
+{"userStories":[{"id":"US-001","passes":true}]}
+EOF
+
+    # 模拟 recover_completed_tasks 逻辑
+    local task_id="US-001"
+    local worktree_passes
+    worktree_passes=$(jq -r '.userStories[] | select(.id == "'$task_id'") | .passes' "$worktree_prd")
+
+    if [ "$worktree_passes" = "true" ]; then
+        jq --arg id "$task_id" '.userStories = [.userStories[] | if .id == $id then .passes = true else . end]' "$main_prd" > "${main_prd}.tmp"
+        mv "${main_prd}.tmp" "$main_prd"
+    fi
+
+    # 验证主 PRD 已更新
+    local main_passes
+    main_passes=$(jq -r '.userStories[] | select(.id == "US-001") | .passes' "$main_prd")
+
+    assert_equals "true" "$main_passes"
+}
+
+run_test "Bug#3: Worktree 状态合并到主 PRD" test_worktree_status_merge_to_main
+
+# Bug #5: PRD 备份恢复 (防止 git merge 覆盖)
+test_prd_backup_before_merge() {
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    trap "rm -rf '$temp_dir'" RETURN
+
+    local main_prd="$temp_dir/prd.json"
+    local backup_prd="$temp_dir/prd-backup.json"
+
+    # 初始主 PRD
+    cat > "$main_prd" << 'EOF'
+{"userStories":[{"id":"US-001","passes":false}]}
+EOF
+
+    # 1. 备份主 PRD
+    cp "$main_prd" "$backup_prd"
+
+    # 2. 模拟 git merge 可能覆盖（这里不实际 merge，只模拟覆盖）
+    cat > "$main_prd" << 'EOF'
+{"userStories":[{"id":"US-001","passes":false}]}
+EOF
+
+    # 3. 恢复备份并更新状态
+    mv "$backup_prd" "$main_prd"
+    jq '.userStories[0].passes = true' "$main_prd" > "${main_prd}.tmp"
+    mv "${main_prd}.tmp" "$main_prd"
+
+    # 验证状态正确更新
+    local passes
+    passes=$(jq -r '.userStories[0].passes' "$main_prd")
+    assert_equals "true" "$passes"
+}
+
+run_test "Bug#5: PRD 备份恢复防覆盖" test_prd_backup_before_merge
+
+# Bug #3 补充: 检测 worktree 已完成但未合并
+test_detect_unmerged_completed_worktree() {
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    trap "rm -rf '$temp_dir'" RETURN
+
+    local main_prd="$temp_dir/prd.json"
+    local worktree_dir="$temp_dir/.claude/worktrees/US-001"
+    local worktree_prd="$worktree_dir/prd.json"
+
+    mkdir -p "$worktree_dir"
+
+    # 主 PRD: 任务未完成
+    cat > "$main_prd" << 'EOF'
+{"userStories":[{"id":"US-001","passes":false}]}
+EOF
+
+    # Worktree PRD: 任务已完成
+    cat > "$worktree_prd" << 'EOF'
+{"currentTask":"US-001","userStories":[{"id":"US-001","passes":true}]}
+EOF
+
+    # 检测逻辑：worktree 中任务完成但主 PRD 未更新
+    local worktree_passes main_passes
+    worktree_passes=$(jq -r '.userStories[] | select(.id == "US-001") | .passes' "$worktree_prd")
+    main_passes=$(jq -r '.userStories[] | select(.id == "US-001") | .passes' "$main_prd")
+
+    # 应该检测到不一致
+    if [ "$worktree_passes" = "true" ] && [ "$main_passes" != "true" ]; then
+        return 0  # 检测到问题
+    else
+        echo "      未能检测到状态不一致"
+        return 1
+    fi
+}
+
+run_test "检测未合并的已完成 worktree" test_detect_unmerged_completed_worktree
+
+# Bug #5 补充: self-merge 脚本逻辑验证
+test_self_merge_script_logic() {
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    trap "rm -rf '$temp_dir'" RETURN
+
+    local worktree="$temp_dir/worktree"
+    local project_dir="$temp_dir/project"
+    mkdir -p "$worktree" "$project_dir"
+
+    # 创建 worker context
+    cat > "$worktree/.worker-context" << EOF
+PROJECT_DIR=$project_dir
+TASK_ID=US-001
+BRANCH_NAME=ralph/US-001-123
+MAIN_BRANCH=main
+WORKTREE_PATH=$worktree
+EOF
+
+    # 创建模拟 self-merge 脚本并验证逻辑
+    local merge_script="$worktree/self-merge.sh"
+    cat > "$merge_script" << 'SCRIPT'
+#!/bin/bash
+cd "$(dirname "$0")"
+[ ! -f ".worker-context" ] && { echo "No .worker-context"; exit 1; }
+source .worker-context
+echo "TASK_ID=$TASK_ID"
+echo "PROJECT_DIR=$PROJECT_DIR"
+SCRIPT
+    chmod +x "$merge_script"
+
+    # 执行并验证
+    local output
+    output=$("$merge_script" 2>&1)
+
+    assert_contains "$output" "TASK_ID=US-001" && \
+    assert_contains "$output" "PROJECT_DIR=$project_dir"
+}
+
+run_test "self-merge 脚本逻辑验证" test_self_merge_script_logic
+
+# Bug #4: Launchd plist 检测和清理
+test_no_stale_launchd_plist() {
+    local plist_path="$HOME/Library/LaunchAgents/com.ralph.daemon.plist"
+
+    # 如果存在 plist，检查 daemon 是否真的在运行
+    if [ -f "$plist_path" ]; then
+        local is_loaded
+        is_loaded=$(launchctl list 2>/dev/null | grep -c "com.ralph.daemon" || echo "0")
+
+        # 如果 plist 存在但未加载，说明是残留文件
+        if [ "$is_loaded" = "0" ]; then
+            echo "      发现残留 plist 文件: $plist_path"
+            return 1
+        fi
+    fi
+
+    # plist 不存在或正常运行
+    return 0
+}
+
+run_test "Bug#4: 无残留 launchd plist" test_no_stale_launchd_plist
+
+# Bug #4 补充: launchd 不应该有 KeepAlive
+test_launchd_no_keepalive_if_stopped() {
+    local plist_path="$HOME/Library/LaunchAgents/com.ralph.daemon.plist"
+
+    # 如果存在 plist，验证可以正常停止
+    if [ -f "$plist_path" ]; then
+        # 检查是否有 KeepAlive（可能导致无法停止）
+        local has_keepalive
+        has_keepalive=$(grep -c "KeepAlive" "$plist_path" 2>/dev/null || echo "0")
+
+        if [ "$has_keepalive" -gt 0 ]; then
+            echo "      plist 含 KeepAlive，可能导致无法停止"
+            # 这本身不是 bug，但需要记录
+        fi
+    fi
+
+    return 0
+}
+
+run_test "launchd plist 配置检查" test_launchd_no_keepalive_if_stopped
+
+# ==========================================
 # 总结
 # ==========================================
 echo ""

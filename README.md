@@ -10,6 +10,25 @@ Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
 - `jq` installed (`brew install jq` on macOS)
 - A git repository for your project
 
+## Testing
+
+Run the test suite to verify scripts work correctly:
+
+```bash
+./tests/run_tests.sh
+```
+
+Tests cover:
+- Symlink resolution
+- Configuration management
+- PRD status parsing
+- Worktree management
+- Daemon script functionality
+- Edge cases and error handling
+- Git integration
+
+All 28 tests should pass.
+
 ## Setup
 
 ### Copy to your project

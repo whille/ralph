@@ -16,13 +16,25 @@ You are an autonomous coding agent working on a software project.
 10. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
 11. Update the PRD to set `passes: true` for the completed story
 12. Append your progress to `progress.txt`
-13. **If running in daemon mode (`.worker-context` exists), run self-merge:**
-    ```bash
-    # Check if this is a daemon worker
-    if [ -f ".worker-context" ]; then
-      ./self-merge.sh success
-    fi
-    ```
+13. **If running in daemon mode (`.worker-context` exists):**
+    - **Review mode** (`reviewMode: true`): Update `.task-status` to `{"status": "completed", ...}` and output `<promise>COMPLETE</promise>`. Do NOT run self-merge.
+    - **Auto-merge mode** (`reviewMode: false` or no `.worker-context`): Run `./self-merge.sh success`
+
+## PRD Dependency Format
+
+When generating or updating `prd.json`, include a `depends` array per user story:
+
+```json
+{
+  "id": "US-071",
+  "title": "滑动窗口优化算法",
+  "depends": ["US-068", "US-069", "US-070"],
+  "priority": 71,
+  "passes": false
+}
+```
+
+Extract `depends` from the PRD's `## 任务拆分` section. Stories with no dependencies use `"depends": []`.
 
 ## Decision Points
 

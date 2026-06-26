@@ -1,11 +1,11 @@
 #!/bin/bash
 # Ralph Wiggum - Long-running AI agent loop
-# Usage: ./ralph.sh [--tool amp|claude] [max_iterations]
+# Usage: ./ralph.sh [--tool amp|ccc] [max_iterations]
 
 set -e
 
 # Parse arguments
-TOOL="claude"  # Default to Claude
+TOOL="ccc"  # Default to ccc
 MAX_ITERATIONS=10
 
 while [[ $# -gt 0 ]]; do
@@ -29,8 +29,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validate tool choice
-if [[ "$TOOL" != "amp" && "$TOOL" != "claude" ]]; then
-  echo "Error: Invalid tool '$TOOL'. Must be 'amp' or 'claude'."
+if [[ "$TOOL" != "amp" && "$TOOL" != "ccc" ]]; then
+  echo "Error: Invalid tool '$TOOL'. Must be 'amp' or 'ccc'."
   exit 1
 fi
 
@@ -103,8 +103,8 @@ for i in $(seq 1 $MAX_ITERATIONS); do
   if [[ "$TOOL" == "amp" ]]; then
     OUTPUT=$(cat "$SCRIPT_DIR/prompt.md" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
   else
-    # Claude Code: use --dangerously-skip-permissions for autonomous operation, --print for output
-    OUTPUT=$(claude --dangerously-skip-permissions --print < "$SCRIPT_DIR/CLAUDE.md" 2>&1 | tee /dev/stderr) || true
+    # ccc Code: use --dangerously-skip-permissions for autonomous operation, --print for output
+    OUTPUT=$(ccc --dangerously-skip-permissions --print < "$SCRIPT_DIR/claude.md" 2>&1 | tee /dev/stderr) || true
   fi
 
   # Check for completion signal

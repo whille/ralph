@@ -1,11 +1,11 @@
 #!/bin/bash
 # Ralph Wiggum - Long-running AI agent loop
-# Usage: ./ralph.sh [--tool amp|ccc] [max_iterations]
+# Usage: ./ralph.sh [--tool amp|claude] [max_iterations]
 
 set -e
 
 # Parse arguments
-TOOL="ccc"  # Default to ccc
+TOOL="claude"  # Default to Claude
 MAX_ITERATIONS=10
 
 while [[ $# -gt 0 ]]; do
@@ -29,8 +29,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validate tool choice
-if [[ "$TOOL" != "amp" && "$TOOL" != "ccc" ]]; then
-  echo "Error: Invalid tool '$TOOL'. Must be 'amp' or 'ccc'."
+if [[ "$TOOL" != "amp" && "$TOOL" != "claude" ]]; then
+  echo "Error: Invalid tool '$TOOL'. Must be 'amp' or 'claude'."
   exit 1
 fi
 
@@ -93,19 +93,48 @@ fi
 
 echo "Starting Ralph - Tool: $TOOL - Max iterations: $MAX_ITERATIONS"
 
+# Auto-export the current ccc.json provider env so ANTHROPIC_AUTH_TOKEN /
+# BASE_URL / MODEL are set. Lets `ralph.sh` and `ccc` share provider config
+# without manual export. Skipped if ccc.json or jq is unavailable.
+if [[ "$TOOL" == "claude" ]] && [[ -f "$HOME/.claude/ccc.json" ]] && command -v jq >/dev/null 2>&1; then
+  CCC_CURRENT=$(jq -r '.current_provider // empty' "$HOME/.claude/ccc.json" 2>/dev/null)
+  if [[ -n "$CCC_CURRENT" ]]; then
+    while IFS=$'\t' read -r key value; do
+      export "$key=$value"
+    done < <(jq -r ".providers[\"$CCC_CURRENT\"].env // {} | to_entries | .[] | \"\(.key)\t\(.value)\"" "$HOME/.claude/ccc.json" 2>/dev/null)
+    echo "Injected ccc provider env: $CCC_CURRENT ($ANTHROPIC_BASE_URL)"
+  fi
+fi
+
 for i in $(seq 1 $MAX_ITERATIONS); do
   echo ""
   echo "==============================================================="
   echo "  Ralph Iteration $i of $MAX_ITERATIONS ($TOOL)"
   echo "==============================================================="
 
-  # Run the selected tool with the ralph prompt
+  # Run the selected tool with the ralph prompt.
+  # Stream stdout/stderr live to terminal via `tail -f` (line-buffered on tty),
+  # then read full output from log file for <promise>COMPLETE</promise> detection.
+  # `tee /dev/stderr` was block-buffered and hid progress for the full run.
+  ITER_LOG="$SCRIPT_DIR/.ralph_iter_${i}.log"
   if [[ "$TOOL" == "amp" ]]; then
-    OUTPUT=$(cat "$SCRIPT_DIR/prompt.md" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
+    ( cat "$SCRIPT_DIR/prompt.md" | amp --dangerously-allow-all ) > "$ITER_LOG" 2>&1 &
+    TOOL_PID=$!
   else
-    # ccc Code: use --dangerously-skip-permissions for autonomous operation, --print for output
-    OUTPUT=$(ccc --dangerously-skip-permissions --print < "$SCRIPT_DIR/claude.md" 2>&1 | tee /dev/stderr) || true
+    # Direct claude CLI (provider env injected above from ccc.json)
+    claude --dangerously-skip-permissions --print < "$SCRIPT_DIR/claude.md" > "$ITER_LOG" 2>&1 &
+    TOOL_PID=$!
   fi
+
+  # Live-stream the log to terminal so user sees progress; kill tail when tool exits
+  tail -n +1 -f "$ITER_LOG" >/dev/stderr &
+  TAIL_PID=$!
+  wait "$TOOL_PID"
+  TOOL_EXIT=$?
+  kill "$TAIL_PID" 2>/dev/null
+  wait "$TAIL_PID" 2>/dev/null
+
+  OUTPUT=$(cat "$ITER_LOG")
 
   # Check for completion signal
   if echo "$OUTPUT" | grep -q "<promise>COMPLETE</promise>"; then
